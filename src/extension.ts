@@ -378,22 +378,22 @@ async function showSwitcherMenu(context: vscode.ExtensionContext) {
                        : q.claudeWeekly !== undefined ? q.claudeWeekly  
                        : undefined;
 
-            const formatResetTime = (resetTimeMs?: number) => {
-                if (!resetTimeMs) return undefined;
+            const formatResetStr = (resetTimeMs?: number) => {
+                if (!resetTimeMs) return '';
                 const diff = resetTimeMs - Date.now();
-                if (diff <= 0) return undefined;
+                if (diff <= 0) return ' (Quota Reset)';
                 const mins = Math.ceil(diff / 60000);
-                if (mins < 60) return `${mins}m`; 
+                if (mins < 60) return ` (Reset in ${mins}m)`;
                 const hours = Math.floor(mins / 60);
-                return `${hours}h ${mins % 60}m`;
+                return ` (Reset in ${hours}h ${mins % 60}m)`;
             };
 
             if (gPct !== undefined || cPct !== undefined) {
-                const gReset = formatResetTime(q.geminiResetTime);
-                const cReset = formatResetTime(q.claudeResetTime);
+                const gResetStr = formatResetStr(q.geminiResetTime);
+                const cResetStr = formatResetStr(q.claudeResetTime);
                 
-                const gStr = gPct !== undefined ? `${gPct}%${gReset && gPct < 100 ? ' (Reset in '+gReset+')' : ''}` : '?';
-                const cStr = cPct !== undefined ? `${cPct}%${cReset && cPct < 100 ? ' (Reset in '+cReset+')' : ''}` : '?';
+                const gStr = gPct !== undefined ? `${gPct}%${gPct < 100 ? gResetStr : ''}` : '?';
+                const cStr = cPct !== undefined ? `${cPct}%${cPct < 100 ? cResetStr : ''}` : '?';
                 
                 detailLine = `Gemini ${gStr}  ·  Claude/GPT ${cStr}`;
                 if (!isActive && q.lastUpdated) {
