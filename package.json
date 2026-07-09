@@ -1,0 +1,27 @@
+{
+  "name": "antigravity-account-switcher",
+  "displayName": "Antigravity Google Account Switcher",
+  "description": "Manage multiple Google AI Pro accounts and switch between them instantly.",
+  "version": "1.0.0",
+  "publisher": "Mesyme",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "*"
+  ],
+  "main": "./out/extension.js",
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "18.x",
+    "@types/vscode": "^1.80.0",
+    "typescript": "^5.1.3"
+  }
+}
