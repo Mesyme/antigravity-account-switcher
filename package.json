@@ -2,7 +2,7 @@
   "name": "antigravity-account-switcher",
   "displayName": "Antigravity Google Account Switcher",
   "description": "Manage multiple Google AI Pro accounts and switch between them instantly.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "Mesyme",
   "license": "MIT",
   "icon": "icon.png",

@@ -1,16 +1,206 @@
 import * as vscode from 'vscode';
 import * as https from 'https';
 
-interface SavedAccount {
+export interface QuotaInfo {
+    geminiPercent?: number; 
+    geminiWeekly?: number;  
+    claudePercent?: number;
+    claudeResetHours?: number;
+    lastUpdated?: number;
+}
+
+export interface SavedAccount {
     email: string;
     name: string;
     picture?: string;
     tokenInfo: any;
+    quota?: QuotaInfo;
 }
 
 let statusBarItem: vscode.StatusBarItem;
 let lastActiveAccessToken: string | null = null;
 let syncInterval: NodeJS.Timeout | null = null;
+
+interface ProtoField {
+    field: number;
+    wireType: number;
+    type: 'varint' | 'string' | 'message' | 'bytes' | 'float32' | 'float64';
+    value: any;
+}
+
+function decodeProtobuf(buffer: Buffer, depth: number = 0): ProtoField[] {
+    const results: ProtoField[] = [];
+    let offset = 0;
+
+    while (offset < buffer.length) {
+        try {
+            let tag = 0, shift = 0, byte: number;
+            do {
+                byte = buffer[offset++];
+                tag |= (byte & 0x7f) << shift;
+                shift += 7;
+            } while (byte & 0x80 && offset < buffer.length);
+
+            const fieldNumber = tag >> 3;
+            const wireType = tag & 0x7;
+            if (fieldNumber === 0 || fieldNumber > 1000) break;
+
+            switch (wireType) {
+                case 0: { 
+                    let value = 0; shift = 0;
+                    do {
+                        byte = buffer[offset++];
+                        value |= (byte & 0x7f) << shift;
+                        shift += 7;
+                    } while (byte & 0x80 && offset < buffer.length);
+                    results.push({ field: fieldNumber, wireType, type: 'varint', value });
+                    break;
+                }
+                case 1: { 
+                    const value = buffer.readDoubleLE(offset);
+                    offset += 8;
+                    results.push({ field: fieldNumber, wireType, type: 'float64', value });
+                    break;
+                }
+                case 2: { 
+                    let len = 0; shift = 0;
+                    do {
+                        byte = buffer[offset++];
+                        len |= (byte & 0x7f) << shift;
+                        shift += 7;
+                    } while (byte & 0x80 && offset < buffer.length);
+
+                    const data = buffer.slice(offset, offset + len);
+                    offset += len;
+
+                    const str = data.toString('utf8');
+                    const isPrintable = /^[\x20-\x7E\r\n\t]+$/.test(str);
+
+                    if (isPrintable && str.length > 0) {
+                        results.push({ field: fieldNumber, wireType, type: 'string', value: str });
+                    } else if (depth < 3) {
+                        try {
+                            const nested = decodeProtobuf(data, depth + 1);
+                            if (nested.length > 0) {
+                                results.push({ field: fieldNumber, wireType, type: 'message', value: nested });
+                            } else {
+                                results.push({ field: fieldNumber, wireType, type: 'bytes', value: data });
+                            }
+                        } catch {
+                            results.push({ field: fieldNumber, wireType, type: 'bytes', value: data });
+                        }
+                    }
+                    break;
+                }
+                case 5: { 
+                    const value = buffer.readFloatLE(offset);
+                    offset += 4;
+                    results.push({ field: fieldNumber, wireType, type: 'float32', value });
+                    break;
+                }
+                default:
+                    return results;
+            }
+        } catch {
+            break;
+        }
+    }
+    return results;
+}
+
+interface ModelQuota {
+    label: string;
+    remainingFraction: number;
+}
+
+function extractModelQuotas(decoded: ProtoField[]): ModelQuota[] {
+    const models: ModelQuota[] = [];
+
+    for (const field of decoded) {
+        if (field.type !== 'message') continue;
+        const subFields: ProtoField[] = field.value;
+
+        
+        const labelField = subFields.find(
+            (f: ProtoField) => f.field === 1 && f.type === 'string'
+        );
+        if (!labelField) {
+            
+            models.push(...extractModelQuotas(subFields));
+            continue;
+        }
+        const label: string = labelField.value;
+
+        if (!label.includes('Gemini') && !label.includes('Claude') && !label.includes('GPT')) {
+            
+            models.push(...extractModelQuotas(subFields));
+            continue;
+        }
+
+        
+        const quotaField = subFields.find(
+            (f: ProtoField) => f.field === 15 && f.type === 'message'
+        );
+        let remainingFraction = 1.0; 
+        if (quotaField) {
+            const fracField = (quotaField.value as ProtoField[]).find(
+                (f: ProtoField) => f.field === 1 && (f.type === 'float32' || f.type === 'float64')
+            );
+            if (fracField) {
+                remainingFraction = fracField.value;
+            }
+        }
+
+        models.push({ label, remainingFraction });
+    }
+    return models;
+}
+
+/** Parse getUserStatus() base64 protobuf and return quota percentages. */
+async function fetchQuotaFromUserStatus(): Promise<QuotaInfo | null> {
+    const uss = getUnifiedStateSync();
+    if (!uss || !uss.UserStatus) return null;
+
+    try {
+        const statusB64: string = await uss.UserStatus.getUserStatus();
+        if (!statusB64 || typeof statusB64 !== 'string') return null;
+
+        const buf = Buffer.from(statusB64, 'base64');
+        const decoded = decodeProtobuf(buf);
+        const models = extractModelQuotas(decoded);
+
+        if (models.length === 0) return null;
+
+        
+        
+        
+        let geminiMin = 1.0;
+        let claudeMin = 1.0;
+        let hasGemini = false;
+        let hasClaude = false;
+
+        for (const m of models) {
+            if (m.label.includes('Gemini')) {
+                geminiMin = Math.min(geminiMin, m.remainingFraction);
+                hasGemini = true;
+            } else if (m.label.includes('Claude')) {
+                claudeMin = Math.min(claudeMin, m.remainingFraction);
+                hasClaude = true;
+            }
+        }
+
+        return {
+            geminiPercent: hasGemini ? Math.round(geminiMin * 100) : undefined,
+            claudePercent: hasClaude ? Math.round(claudeMin * 100) : undefined,
+            lastUpdated: Date.now()
+        };
+    } catch (e) {
+        console.error('Error parsing getUserStatus protobuf:', e);
+        return null;
+    }
+}
+
+
 
 function fetchUserInfo(accessToken: string): Promise<{ email: string; name: string; picture?: string }> {
     return new Promise((resolve, reject) => {
@@ -49,9 +239,13 @@ function fetchUserInfo(accessToken: string): Promise<{ email: string; name: stri
     });
 }
 
+
+
 function getUnifiedStateSync(): any {
     return (vscode as any).antigravityUnifiedStateSync;
 }
+
+
 
 export function activate(context: vscode.ExtensionContext) {
     console.log('Antigravity Google Account Switcher activated!');
@@ -72,6 +266,13 @@ export function activate(context: vscode.ExtensionContext) {
     }, 3000);
 
     syncActiveSession(context);
+
+    
+    const { startBackgroundQuotaPolling, stopBackgroundQuotaPolling } = require('./agq_polling');
+    startBackgroundQuotaPolling(context);
+    
+    context.subscriptions.push({ dispose: stopBackgroundQuotaPolling });
+
 }
 
 export function deactivate() {
@@ -79,6 +280,8 @@ export function deactivate() {
         clearInterval(syncInterval);
     }
 }
+
+
 
 async function syncActiveSession(context: vscode.ExtensionContext) {
     const uss = getUnifiedStateSync();
@@ -97,22 +300,28 @@ async function syncActiveSession(context: vscode.ExtensionContext) {
             return;
         }
 
-        if (tokenInfo.accessToken === lastActiveAccessToken) {
-            return;
+        let googleInfo: any;
+        try {
+            googleInfo = await fetchUserInfo(tokenInfo.accessToken);
+        } catch (e) {
+            console.error('Error fetching user info:', e);
+            throw e;
         }
-        lastActiveAccessToken = tokenInfo.accessToken;
 
-        const googleInfo = await fetchUserInfo(tokenInfo.accessToken);
         const email = googleInfo.email;
-
         const accounts = context.globalState.get<SavedAccount[]>('saved_accounts', []);
         const existingIdx = accounts.findIndex(a => a.email.toLowerCase() === email.toLowerCase());
+
+        
+        const existingAccount = existingIdx !== -1 ? accounts[existingIdx] : null;
 
         const updatedAccount: SavedAccount = {
             email,
             name: googleInfo.name,
             picture: googleInfo.picture,
-            tokenInfo
+            tokenInfo,
+            
+            quota: existingAccount?.quota || undefined
         };
 
         if (existingIdx !== -1) {
@@ -125,12 +334,13 @@ async function syncActiveSession(context: vscode.ExtensionContext) {
         await context.globalState.update('saved_accounts', accounts);
         await context.globalState.update('active_email', email);
 
+        lastActiveAccessToken = tokenInfo.accessToken;
+
         statusBarItem.text = `👤 ${email}`;
         statusBarItem.tooltip = `Active account: ${googleInfo.name} (${email}). Click to switch or add accounts.`;
 
     } catch (e) {
         console.error('Error syncing active session:', e);
-        const accounts = context.globalState.get<SavedAccount[]>('saved_accounts', []);
         const activeEmail = context.globalState.get<string>('active_email');
         if (activeEmail) {
             statusBarItem.text = `👤 ${activeEmail}`;
@@ -142,24 +352,56 @@ async function syncActiveSession(context: vscode.ExtensionContext) {
     }
 }
 
+
+
 async function showSwitcherMenu(context: vscode.ExtensionContext) {
     const accounts = context.globalState.get<SavedAccount[]>('saved_accounts', []);
     const activeEmail = context.globalState.get<string>('active_email');
 
     const items: vscode.QuickPickItem[] = [];
 
+    let activeItemToFocus: vscode.QuickPickItem | undefined = undefined;
+
     for (const account of accounts) {
         const isActive = activeEmail && account.email.toLowerCase() === activeEmail.toLowerCase();
-        items.push({
+
+        let detailLine = '';
+        const q = account.quota as any;
+        if (q) {
+            
+            const gPct = q.geminiPercent !== undefined ? q.geminiPercent
+                       : q.geminiWeekly !== undefined ? q.geminiWeekly  
+                       : undefined;
+            const cPct = q.claudePercent !== undefined ? q.claudePercent
+                       : q.claudeWeekly !== undefined ? q.claudeWeekly  
+                       : undefined;
+
+            if (gPct !== undefined || cPct !== undefined) {
+                const gStr = gPct !== undefined ? `${gPct}%` : '?';
+                const cStr = cPct !== undefined ? `${cPct}%` : '?';
+                detailLine = `Gemini ${gStr} remaining  ·  Claude/GPT ${cStr} remaining`;
+                if (!isActive && q.lastUpdated) {
+                    const ago = Math.round((Date.now() - q.lastUpdated) / 60000);
+                    detailLine += `  (${ago}m ago)`;
+                }
+            } else {
+                detailLine = isActive ? 'Updating quota...' : 'Switch to update quota';
+            }
+        } else {
+            detailLine = isActive ? 'Updating quota...' : 'Switch to update quota';
+        }
+
+        const qItem: vscode.QuickPickItem = {
             label: `${isActive ? '$(check) ' : '$(account) '} ${account.name}`,
             description: account.email,
-            buttons: [
-                {
-                    iconPath: new vscode.ThemeIcon('trash'),
-                    tooltip: 'Remove account'
-                }
-            ]
-        });
+            detail: detailLine
+        };
+        
+        items.push(qItem);
+        
+        if (isActive) {
+            activeItemToFocus = qItem;
+        }
     }
 
     if (accounts.length > 0) {
@@ -182,6 +424,9 @@ async function showSwitcherMenu(context: vscode.ExtensionContext) {
     const quickPick = vscode.window.createQuickPick();
     quickPick.items = items;
     quickPick.placeholder = 'Google AI Pro Account Switcher';
+    if (activeItemToFocus) {
+        quickPick.activeItems = [activeItemToFocus];
+    }
 
     quickPick.onDidTriggerItemButton(async (e) => {
         const accountToRemove = e.item.description;
@@ -223,9 +468,11 @@ async function showSwitcherMenu(context: vscode.ExtensionContext) {
     quickPick.show();
 }
 
+
+
 async function triggerAddAccount(context: vscode.ExtensionContext) {
     vscode.window.showInformationMessage('Google login initiated. Please complete the authentication in your browser.');
-    
+
     try {
         await vscode.commands.executeCommand('workbench.action.loginWithRedirect');
     } catch (err) {
@@ -281,7 +528,7 @@ async function switchAccount(context: vscode.ExtensionContext, email: string) {
             cancellable: false
         }, async () => {
             await uss.OAuthPreferences.setOAuthTokenInfo(target.tokenInfo);
-            
+
             await context.globalState.update('active_email', email);
             lastActiveAccessToken = target.tokenInfo.accessToken;
 
