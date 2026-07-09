@@ -4,6 +4,7 @@
   "description": "Manage multiple Google AI Pro accounts and switch between them instantly.",
   "version": "1.0.0",
   "publisher": "Mesyme",
+  "license": "MIT",
   "engines": {
     "vscode": "^1.80.0"
   },
