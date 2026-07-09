@@ -16,7 +16,8 @@ export async function startBackgroundQuotaPolling(context: vscode.ExtensionConte
     quotaManager.on_update((snapshot) => {
         let geminiMin = 1.0;
         let claudeMin = 1.0;
-        let claudeHours = 0;
+        let geminiResetTime: number | undefined;
+        let claudeResetTime: number | undefined;
         
         for (const model of snapshot.models) {
             const label = model.label || '';
@@ -29,21 +30,23 @@ export async function startBackgroundQuotaPolling(context: vscode.ExtensionConte
                 remain = 0.0;
             }
 
-            const hours = model.time_until_reset ? model.time_until_reset / (1000 * 60 * 60) : 0;
-            
-            if (label.toLowerCase().includes('gemini')) {
-                geminiMin = Math.min(geminiMin, remain);
-            } else if (label.toLowerCase().includes('claude')) {
-                claudeMin = Math.min(claudeMin, remain);
-                claudeHours = Math.max(claudeHours, hours);
-            } else if (label.toLowerCase().includes('gpt')) {
-                // If GPT shares Claude quota, we can also count it
-                claudeMin = Math.min(claudeMin, remain);
-                claudeHours = Math.max(claudeHours, hours);
+            if (label.includes('Gemini')) {
+                if (remain <= geminiMin) {
+                    geminiMin = remain;
+                    if (model.reset_time && model.reset_time.getTime() > 0) {
+                        geminiResetTime = model.reset_time.getTime();
+                    }
+                }
+            } else if (label.includes('Claude') || label.includes('GPT')) {
+                if (remain <= claudeMin) {
+                    claudeMin = remain;
+                    if (model.reset_time && model.reset_time.getTime() > 0) {
+                        claudeResetTime = model.reset_time.getTime();
+                    }
+                }
             }
         }
         
-        // Log the models to file so we can see what Claude reports when 0%
         const fs = require('fs');
         const path = require('path');
         try {
@@ -54,10 +57,11 @@ export async function startBackgroundQuotaPolling(context: vscode.ExtensionConte
         const quotaInfo: QuotaInfo = {
             geminiPercent: Math.round(geminiMin * 100),
             claudePercent: Math.round(claudeMin * 100),
-            claudeResetHours: claudeHours > 0 ? parseFloat(claudeHours.toFixed(1)) : 0
+            geminiResetTime,
+            claudeResetTime,
+            lastUpdated: Date.now()
         };
 
-        // Update active account
         const activeEmail = context.globalState.get<string>('active_email');
         if (!activeEmail) return;
 
@@ -90,7 +94,7 @@ export async function startBackgroundQuotaPolling(context: vscode.ExtensionConte
         const processInfo = await processFinder.detect_process_info(3);
         if (processInfo) {
             quotaManager.init(processInfo.connect_port, processInfo.csrf_token);
-            quotaManager.start_polling(5000); // 5 seconds interval
+            quotaManager.start_polling(5000);
             isInitialized = true;
             console.log('[AGQ Polling] Started successfully');
         } else {

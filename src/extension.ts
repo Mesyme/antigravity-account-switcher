@@ -4,8 +4,10 @@ import * as https from 'https';
 export interface QuotaInfo {
     geminiPercent?: number; 
     geminiWeekly?: number;  
+    geminiResetTime?: number;
     claudePercent?: number;
     claudeResetHours?: number;
+    claudeResetTime?: number;
     lastUpdated?: number;
 }
 
@@ -376,13 +378,27 @@ async function showSwitcherMenu(context: vscode.ExtensionContext) {
                        : q.claudeWeekly !== undefined ? q.claudeWeekly  
                        : undefined;
 
+            const formatResetTime = (resetTimeMs?: number) => {
+                if (!resetTimeMs) return undefined;
+                const diff = resetTimeMs - Date.now();
+                if (diff <= 0) return undefined;
+                const mins = Math.ceil(diff / 60000);
+                if (mins < 60) return `${mins}m`; 
+                const hours = Math.floor(mins / 60);
+                return `${hours}h ${mins % 60}m`;
+            };
+
             if (gPct !== undefined || cPct !== undefined) {
-                const gStr = gPct !== undefined ? `${gPct}%` : '?';
-                const cStr = cPct !== undefined ? `${cPct}%` : '?';
-                detailLine = `Gemini ${gStr} remaining  ·  Claude/GPT ${cStr} remaining`;
+                const gReset = formatResetTime(q.geminiResetTime);
+                const cReset = formatResetTime(q.claudeResetTime);
+                
+                const gStr = gPct !== undefined ? `${gPct}%${gReset && gPct < 100 ? ' (Reset in '+gReset+')' : ''}` : '?';
+                const cStr = cPct !== undefined ? `${cPct}%${cReset && cPct < 100 ? ' (Reset in '+cReset+')' : ''}` : '?';
+                
+                detailLine = `Gemini ${gStr}  ·  Claude/GPT ${cStr}`;
                 if (!isActive && q.lastUpdated) {
                     const ago = Math.round((Date.now() - q.lastUpdated) / 60000);
-                    detailLine += `  (${ago}m ago)`;
+                    detailLine += `  (updated ${ago}m ago)`;
                 }
             } else {
                 detailLine = isActive ? 'Updating quota...' : 'Switch to update quota';
