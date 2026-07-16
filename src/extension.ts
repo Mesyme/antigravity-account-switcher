@@ -15,7 +15,7 @@ export interface SavedAccount {
     email: string;
     name: string;
     picture?: string;
-    tokenInfo: any;
+    tokenInfo?: any;
     quota?: QuotaInfo;
 }
 
@@ -249,13 +249,19 @@ function getUnifiedStateSync(): any {
 
 
 
-export function activate(context: vscode.ExtensionContext) {
+export async function activate(context: vscode.ExtensionContext) {
     console.log('Antigravity Google Account Switcher activated!');
 
     statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
     statusBarItem.command = 'antigravity-switcher.showMenu';
     context.subscriptions.push(statusBarItem);
     statusBarItem.show();
+
+    try {
+        await migrateTokensToSecretStorage(context);
+    } catch (err) {
+        console.error('Error migrating tokens:', err);
+    }
 
     context.subscriptions.push(
         vscode.commands.registerCommand('antigravity-switcher.showMenu', () => showSwitcherMenu(context)),
@@ -317,12 +323,12 @@ async function syncActiveSession(context: vscode.ExtensionContext) {
         
         const existingAccount = existingIdx !== -1 ? accounts[existingIdx] : null;
 
+        await context.secrets.store(`token_${email.toLowerCase()}`, JSON.stringify(tokenInfo));
+
         const updatedAccount: SavedAccount = {
             email,
             name: googleInfo.name,
             picture: googleInfo.picture,
-            tokenInfo,
-            
             quota: existingAccount?.quota || undefined
         };
 
@@ -351,6 +357,22 @@ async function syncActiveSession(context: vscode.ExtensionContext) {
             statusBarItem.text = '👤 Switch Account';
             statusBarItem.tooltip = 'Click to manage Google accounts.';
         }
+    }
+}
+
+async function migrateTokensToSecretStorage(context: vscode.ExtensionContext) {
+    const accounts = context.globalState.get<SavedAccount[]>('saved_accounts', []);
+    let migrated = false;
+    for (const account of accounts) {
+        if (account.tokenInfo) {
+            const emailKey = `token_${account.email.toLowerCase()}`;
+            await context.secrets.store(emailKey, JSON.stringify(account.tokenInfo));
+            delete account.tokenInfo;
+            migrated = true;
+        }
+    }
+    if (migrated) {
+        await context.globalState.update('saved_accounts', accounts);
     }
 }
 
@@ -456,6 +478,7 @@ async function showSwitcherMenu(context: vscode.ExtensionContext) {
             if (confirm === 'Yes') {
                 const filtered = accounts.filter(a => a.email.toLowerCase() !== accountToRemove.toLowerCase());
                 await context.globalState.update('saved_accounts', filtered);
+                await context.secrets.delete(`token_${accountToRemove.toLowerCase()}`);
                 if (activeEmail && activeEmail.toLowerCase() === accountToRemove.toLowerCase()) {
                     await logoutActiveSession();
                     await context.globalState.update('active_email', undefined);
@@ -543,10 +566,17 @@ async function switchAccount(context: vscode.ExtensionContext, email: string) {
             title: `Switching to account ${email}...`,
             cancellable: false
         }, async () => {
-            await uss.OAuthPreferences.setOAuthTokenInfo(target.tokenInfo);
+            const tokenInfoStr = await context.secrets.get(`token_${email.toLowerCase()}`);
+            if (!tokenInfoStr) {
+                vscode.window.showErrorMessage(`Credentials for ${email} could not be retrieved securely.`);
+                return;
+            }
+            const tokenInfo = JSON.parse(tokenInfoStr);
+
+            await uss.OAuthPreferences.setOAuthTokenInfo(tokenInfo);
 
             await context.globalState.update('active_email', email);
-            lastActiveAccessToken = target.tokenInfo.accessToken;
+            lastActiveAccessToken = tokenInfo.accessToken;
 
             await new Promise(resolve => setTimeout(resolve, 1500));
 

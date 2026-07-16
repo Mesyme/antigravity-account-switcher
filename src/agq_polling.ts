@@ -2,12 +2,14 @@ import * as vscode from 'vscode';
 import { ProcessFinder } from './agq/process_finder';
 import { QuotaManager } from './agq/quota_manager';
 import { QuotaInfo, SavedAccount } from './extension';
+import { logger } from './agq/utils/logger';
 
 let processFinder: ProcessFinder | null = null;
 let quotaManager: QuotaManager | null = null;
 let isInitialized = false;
 
 export async function startBackgroundQuotaPolling(context: vscode.ExtensionContext) {
+    logger.init(context);
     if (isInitialized) return;
     
     processFinder = new ProcessFinder();
@@ -47,11 +49,8 @@ export async function startBackgroundQuotaPolling(context: vscode.ExtensionConte
             }
         }
         
-        const fs = require('fs');
-        const path = require('path');
         try {
-            const logPath = path.join(__dirname, '..', 'quota_debug.log');
-            fs.appendFileSync(logPath, `\n--- SNAPSHOT ---\n${JSON.stringify(snapshot.models, null, 2)}\n`);
+            logger.debug('Quota Snapshot', `\n--- SNAPSHOT ---\n${JSON.stringify(snapshot.models, null, 2)}\n`);
         } catch (e) {}
         
         const quotaInfo: QuotaInfo = {

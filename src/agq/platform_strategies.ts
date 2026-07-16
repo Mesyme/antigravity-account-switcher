@@ -37,6 +37,9 @@ export class WindowsStrategy implements platform_strategy {
 	}
 
 	get_process_list_command(process_name: string): string {
+		if (!/^[a-zA-Z0-9_\-\.]+$/.test(process_name)) {
+			throw new Error(`Invalid process name: ${process_name}`);
+		}
 		if (this.use_powershell) {
 			return `powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \\"name='${process_name}'\\" | Select-Object ProcessId,CommandLine | ConvertTo-Json"`;
 		}
@@ -177,6 +180,9 @@ export class WindowsStrategy implements platform_strategy {
 	}
 
 	get_port_list_command(pid: number): string {
+		if (!Number.isInteger(pid) || pid <= 0) {
+			throw new Error(`Invalid PID: ${pid}`);
+		}
 		if (this.use_powershell) {
 			return `powershell -NoProfile -Command "Get-NetTCPConnection -OwningProcess ${pid} -State Listen | Select-Object -ExpandProperty LocalPort | ConvertTo-Json"`;
 		}
@@ -239,6 +245,9 @@ export class UnixStrategy implements platform_strategy {
 	}
 
 	get_process_list_command(process_name: string): string {
+		if (!/^[a-zA-Z0-9_\-\.]+$/.test(process_name)) {
+			throw new Error(`Invalid process name: ${process_name}`);
+		}
 		if (this.platform === 'darwin') {
 			return `LC_ALL=C pgrep -fl ${process_name}`;
 		}
@@ -309,6 +318,9 @@ export class UnixStrategy implements platform_strategy {
 	}
 
 	get_port_list_command(pid: number): string {
+		if (!Number.isInteger(pid) || pid <= 0) {
+			throw new Error(`Invalid PID: ${pid}`);
+		}
 		if (this.platform === 'darwin') {
 			return `lsof -nP -a -iTCP -sTCP:LISTEN -p ${pid}`;
 		}
